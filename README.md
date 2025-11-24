@@ -3,6 +3,12 @@
 ## Overview
 A fork of **nanoGPT** that adds a first‑stage inference optimization – a **Key‑Value (KV) cache** – to dramatically speed up autoregressive generation. The repo also includes a benchmark script and an animated visualizer that expose the cache dynamics.
 
+
+## KV‑cache visualization
+![kv_dashboard](https://github.com/user-attachments/assets/d5f406dd-4d66-4a62-aab6-7f98b708bcdb)
+
+The GIF animates how each new token’s query interacts with the growing key/value cache and how attention is computed.
+
 ## Features
 - **KV‑cache implementation** (`model.py`) with a `use_cache` flag.
 - **Benchmark** (`benchmark_kv.py`) measuring per‑token latency (ms) and cache memory (MB) on CPU/GPU, plotted on a dual‑axis chart.
@@ -26,10 +32,6 @@ The benchmark produces `benchmark_results.png` (time vs cache size) and the 
 ![Benchmark plot](https://github.com/shahjui2000/nanoGPT-inference-optimization/blob/master/benchmark_results.png)
 The plot shows a **~2.8× speed‑up** on CPU when using the cache, while the cache grows linearly (~0.07 MB per token) up to the model’s `block_size` (1024 tokens).
 
-## KV‑cache visualization
-![kv_dashboard](https://github.com/user-attachments/assets/d5f406dd-4d66-4a62-aab6-7f98b708bcdb)
-
-The GIF animates how each new token’s query interacts with the growing key/value cache and how attention is computed.
 
 ## Insights & lessons learned
 - The cache must be reset when the sequence exceeds `block_size`; we now emit a warning and truncate the cache.
