@@ -1,15 +1,15 @@
-# nanoGPT – KV‑Cache Inference Optimization
+# nanoGPT‑inference‑optimization
 
 ## Overview
-This fork of **nanoGPT** adds a first‑stage inference optimization: **Key‑Value (KV) cache**.  The cache stores past key/value tensors so that each new token only requires a single forward pass instead of re‑processing the entire context.
+A fork of **nanoGPT** that adds a first‑stage inference optimization – a **Key‑Value (KV) cache** – to dramatically speed up autoregressive generation. The repo also includes a benchmark script and an animated visualizer that expose the cache dynamics.
 
 ## Features
-- **KV‑cache implementation** in `model.py` with a `use_cache` flag.
-- **Benchmark script** (`benchmark_kv.py`) measuring time per token (ms) and cache memory (MB) with a dual‑axis plot.
+- **KV‑cache implementation** (`model.py`) with a `use_cache` flag.
+- **Benchmark** (`benchmark_kv.py`) measuring per‑token latency (ms) and cache memory (MB) on CPU/GPU, plotted on a dual‑axis chart.
 - **Animated visualization** (`visualize_kv.py`) showing query, keys, values, and attention for a chosen layer/head.
 - Warm‑up runs and block‑size safety checks with clear warnings.
 
-## Quick Start
+## Quick start
 ```bash
 # Install dependencies
 pip install torch numpy tiktoken matplotlib
@@ -20,26 +20,34 @@ python benchmark_kv.py
 # Visualize KV dynamics (layer 5, head 0)
 python visualize_kv.py
 ```
-The benchmark generates `benchmark_results.png` (time vs. cache size) and the visualizer creates `kv_dashboard_l5_h0.gif`.
+The benchmark produces `benchmark_results.png` (time vs cache size) and the visualizer creates `kv_dashboard_l5_h0.gif`.
 
-## Results (CPU)
-![Speed vs Memory](https://github.com/shahjui2000/nanoGPT-inference-optimization/blob/master/benchmark_results.png)
+## Benchmark results
+![Benchmark plot](/Users/jui/.gemini/antigravity/playground/volatile-ride/benchmark_results.png)
+The plot shows a **~2.8× speed‑up** on CPU when using the cache, while the cache grows linearly (~0.07 MB per token) up to the model’s `block_size` (1024 tokens).
 
-- **~2.5× speed‑up** for token generation with cache.
-- Cache grows linearly (~0.07 MB per token) up to the model’s `block_size` (1024 tokens).
-- First‑token overhead is expected; subsequent tokens are constant‑time.
+## KV‑cache visualization
+![KV dashboard](/Users/jui/.gemini/antigravity/playground/volatile-ride/kv_dashboard_l5_h0.gif)
+The GIF animates how each new token’s query interacts with the growing key/value cache and how attention is computed.
 
-## Repository Structure
-- `model.py` – core model with KV‑cache support.
+## Insights & lessons learned
+- The cache must be reset when the sequence exceeds `block_size`; we now emit a warning and truncate the cache.
+- Warm‑up runs (3 iterations) stabilize CPU/GPU state, eliminating first‑run jitter.
+- Detailed per‑token timing (model forward, cache calculation, total) makes the constant‑time benefit of caching obvious.
+- Cache size reporting at intervals (tokens 9, 24, 49, 74, 99) demonstrates linear memory growth.
+- Prompt length matters: the first token processes the full prompt, subsequent tokens are constant‑time.
+
+## Repository structure
+- `model.py` – KV‑cache enabled model.
 - `benchmark_kv.py` – performance measurement and plotting.
 - `visualize_kv.py` – animated dashboard of KV dynamics.
-- `README.md` – this file.
+- `README.md` – this documentation.
 
 ## Contribution
-Feel free to extend the cache to multi‑head, multi‑layer visualizations, or integrate with other inference optimizations (e.g., Flash‑Attention).
+Feel free to extend the cache to multi‑head or multi‑layer visualizations, integrate other inference optimizations (e.g., Flash‑Attention), or improve the benchmark visual style.
 
-## Naming Suggestion
-Given that KV‑caching is the primary inference improvement in this fork, a more descriptive repository name such as **`nanoGPT‑kv‑cache`** or **`nanoGPT‑inference‑optim`** would highlight its purpose. Renaming the fork accordingly could make it easier for users to discover this specific optimization.
+## Naming suggestion
+The repository is now named **`nanoGPT‑inference‑optimization`** to highlight that KV caching is the primary inference improvement.
 
 ---
-*This README was generated automatically to reflect the current state of the project.*
+*Generated automatically to reflect the current state of the project.*
