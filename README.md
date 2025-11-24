@@ -23,6 +23,7 @@ python visualize_kv.py
 The benchmark generates `benchmark_results.png` (time vs. cache size) and the visualizer creates `kv_dashboard_l5_h0.gif`.
 
 ## Results (CPU)
+![Speed vs Memory]([https://github.com/adam-p/markdown-here/raw/master/src/common/images/icon48.png](https://github.com/shahjui2000/nanoGPT-inference-optimization/blob/master/benchmark_results.png) "Speed vs Memory Tradeoff for K-V Cache")
 - **~2.5× speed‑up** for token generation with cache.
 - Cache grows linearly (~0.07 MB per token) up to the model’s `block_size` (1024 tokens).
 - First‑token overhead is expected; subsequent tokens are constant‑time.
