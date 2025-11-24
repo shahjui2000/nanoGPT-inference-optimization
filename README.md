@@ -23,11 +23,11 @@ python visualize_kv.py
 The benchmark produces `benchmark_results.png` (time vs cache size) and the visualizer creates `kv_dashboard_l5_h0.gif`.
 
 ## Benchmark results
-![Benchmark plot](/Users/jui/.gemini/antigravity/playground/volatile-ride/benchmark_results.png)
+![Benchmark plot](https://github.com/shahjui2000/nanoGPT-inference-optimization/blob/master/benchmark_results.png)
 The plot shows a **~2.8× speed‑up** on CPU when using the cache, while the cache grows linearly (~0.07 MB per token) up to the model’s `block_size` (1024 tokens).
 
 ## KV‑cache visualization
-![KV dashboard](/Users/jui/.gemini/antigravity/playground/volatile-ride/kv_dashboard_l5_h0.gif)
+![KV dashboard](https://github.com/shahjui2000/nanoGPT-inference-optimization/blob/master/kv_dashboard_l5_h0.gif)
 The GIF animates how each new token’s query interacts with the growing key/value cache and how attention is computed.
 
 ## Insights & lessons learned
