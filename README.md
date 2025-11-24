@@ -27,7 +27,8 @@ The benchmark produces `benchmark_results.png` (time vs cache size) and the 
 The plot shows a **~2.8× speed‑up** on CPU when using the cache, while the cache grows linearly (~0.07 MB per token) up to the model’s `block_size` (1024 tokens).
 
 ## KV‑cache visualization
-![KV dashboard](https://github.com/shahjui2000/nanoGPT-inference-optimization/blob/master/kv_dashboard_l5_h0.gif)
+![kv_dashboard](https://github.com/user-attachments/assets/d5f406dd-4d66-4a62-aab6-7f98b708bcdb)
+
 The GIF animates how each new token’s query interacts with the growing key/value cache and how attention is computed.
 
 ## Insights & lessons learned
