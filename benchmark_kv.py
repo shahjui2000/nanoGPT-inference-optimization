@@ -11,7 +11,7 @@ def benchmark_generation(model, start_tokens, max_new_tokens, use_cache=True):
     # Warmup - run multiple times to stabilize compute
     print(f"Warming up ({'with' if use_cache else 'without'} cache)...")
     with torch.no_grad():
-        for _ in range(1):  # Multiple warmup runs
+        for _ in range(4):  # Multiple warmup runs
             model.generate(start_tokens, max_new_tokens=max_new_tokens, use_cache=use_cache)
     
     print(f"Benchmarking ({'with' if use_cache else 'without'} cache)...")
@@ -26,7 +26,10 @@ def benchmark_generation(model, start_tokens, max_new_tokens, use_cache=True):
             # Check if we're exceeding block size
             if idx.size(1) > model.config.block_size:
                 print(f"WARNING: Exceeded block_size! Sequence length {idx.size(1)} > {model.config.block_size}")
-                print(f"         Cache will be truncated. Consider using a shorter sequence.")
+                print("         Resetting cache.")
+                # Reset cache and truncate sequence to block size
+                past_kv = None
+                idx = idx[:, -model.config.block_size:]
             
             t0 = time.perf_counter()
             
@@ -102,7 +105,7 @@ def main():
     # Prompt - use actual text to demonstrate cache benefits
     import tiktoken
     enc = tiktoken.get_encoding("gpt2")
-    prompt_text = " vibe coding to learn kv cache."
+    prompt_text = " I am vibe coding to learn kv cache. To do that I am benchmarking kv cache."
     start_ids = enc.encode(prompt_text)
     start_tokens = torch.tensor([start_ids], dtype=torch.long, device=device)
     print(f"Prompt: '{prompt_text}' ({len(start_ids)} tokens)")
