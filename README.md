@@ -12,6 +12,17 @@ This repository implements **KV Caching**, a critical optimization that caches t
 
 ## 📊 Benchmark Analysis
 
+
+### Per-Token Latency Trace
+
+To visualize the "why", here is the latency for every single token generated in a sequence (Batch Size 1), averaged over 5 runs:
+
+![Token Latency](token_latency.png)
+
+*   **No Cache (Red)**: Latency increases with every new token (linear growth). The model has to re-process the entire history every time.
+*   **KV Cache (Blue)**: After the first token (prefill), latency is flat and constant. The model only processes the one new token.
+
+
 We benchmarked the implementation on a standard CPU environment using GPT-2 (124M). The benchmark script (`benchmark_kv.py`) measures three key metrics across various batch sizes:
 
 1.  **TTFT (Time To First Token)**: The latency to process the prompt and generate the first token (prefill phase).
@@ -27,14 +38,6 @@ We benchmarked the implementation on a standard CPU environment using GPT-2 (124
 *   **TTPT Stability**: With KV Cache, the time per token remains constant. Without it, TTPT grows linearly with sequence length, making generation progressively slower.
 *   **Memory**: KV Cache requires memory (Purple line), which grows linearly with batch size. This is the trade-off for speed.
 
-### Per-Token Latency Trace
-
-To visualize the "why", here is the latency for every single token generated in a sequence (Batch Size 1), averaged over 5 runs:
-
-![Token Latency](token_latency.png)
-
-*   **No Cache (Red)**: Latency increases with every new token (linear growth). The model has to re-process the entire history every time.
-*   **KV Cache (Blue)**: After the first token (prefill), latency is flat and constant. The model only processes the one new token.
 
 ## 🧠 Visualization
 
@@ -56,6 +59,15 @@ The core changes were made in `model.py`:
     *   Pass the full prompt for the first step (prefill).
     *   Pass only the *last generated token* for subsequent steps (decoding).
     *   Maintain the `past_kv` state across steps.
+
+## 💡 Technical Insights & Learnings
+
+1.  **The "Prefill" Cost is Unavoidable**: Even with KV Cache, the first token (Time-To-First-Token) is always slow because the model must process the entire prompt in parallel. The cache only speeds up the *subsequent* tokens (decoding).
+2.  **Prompt Length Matters**: To truly see the performance gap, the sequence length must be sufficient. With **No Cache**, latency grows linearly with every new token (O(N)). With **KV Cache**, latency remains flat (O(1)) regardless of how long the prompt or generated text becomes.
+3.  **Warm-up is Critical**: Our initial benchmarks showed "spikes" in latency. We learned that performing 3-5 "warm-up" runs is essential to stabilize CPU/GPU clock speeds, memory allocators, and PyTorch kernels before measuring.
+4.  **Batching Hides Overhead**: On CPU (and GPU), dispatching individual kernels for a single token (Batch Size 1) is inefficient. Increasing the batch size allows us to process multiple streams in parallel, significantly increasing **Throughput** (tokens/sec) even if the latency per token (TTPT) stays roughly the same.
+5.  **The Memory Trade-off**: There is no free lunch. We gain speed by consuming memory. The KV cache grows linearly with sequence length and batch size. For long sequences (e.g., 1024 tokens) and large batches, this memory footprint can become the new bottleneck.
+6.  **Production Safety**: A robust implementation must handle the model's context limit (`block_size`). We added logic to detect when the sequence exceeds 1024 tokens and truncate/reset the cache to prevent crashes.
 
 ## 💻 Usage
 
