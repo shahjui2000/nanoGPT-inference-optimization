@@ -9,7 +9,6 @@ __pycache__/
 *.pyc
 input.txt
 env/
-venv/*.png
-*.gif
+venv/
 __pycache__/
 *.pyc

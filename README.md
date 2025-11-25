@@ -1,53 +1,88 @@
-# nanoGPT‑inference‑optimization
+# nanoGPT-inference-optimization
 
-## Overview
-A fork of **nanoGPT** that adds a first‑stage inference optimization – a **Key‑Value (KV) cache** – to dramatically speed up autoregressive generation. The repo also includes a benchmark script and an animated visualizer that expose the cache dynamics.
+**A specialized fork of nanoGPT focused on inference optimization, starting with Key-Value (KV) Caching.**
 
-## Features
-- **KV‑cache implementation** (`model.py`) with a `use_cache` flag.
-- **Benchmark** (`benchmark_kv.py`) measuring per‑token latency (ms) and cache memory (MB) on CPU/GPU, plotted on a dual‑axis chart.
-- **Animated visualization** (`visualize_kv.py`) showing query, keys, values, and attention for a chosen layer/head.
-- Warm‑up runs and block‑size safety checks with clear warnings.
+![Benchmark Results](benchmark_results.png)
 
-## Quick start
+## 🚀 Overview
+
+Large Language Models (LLMs) like GPT-2 are autoregressive: they generate text one token at a time. A naive implementation re-computes the attention for *all* previous tokens at every step, leading to **O(N²)** complexity.
+
+This repository implements **KV Caching**, a critical optimization that caches the Key and Value vectors of past tokens. This allows the model to compute attention only for the *new* token, reducing the complexity of generation to **O(N)**.
+
+## 📊 Benchmark Analysis
+
+We benchmarked the implementation on a standard CPU environment using GPT-2 (124M). The benchmark script (`benchmark_kv.py`) measures three key metrics across various batch sizes:
+
+1.  **TTFT (Time To First Token)**: The latency to process the prompt and generate the first token (prefill phase).
+2.  **TTPT (Time Per Token)**: The average latency to generate each subsequent token (decoding phase).
+3.  **Throughput**: The total number of tokens generated per second.
+
+### Results (CPU)
+
+![Benchmark Results](benchmark_results.png)
+
+**Key Findings:**
+*   **Throughput**: KV Cache (Blue) maintains high throughput as batch size increases, reaching **~635 tokens/sec**. Without cache (Red), throughput collapses because the O(N^2) complexity dominates.
+*   **TTPT Stability**: With KV Cache, the time per token remains constant. Without it, TTPT grows linearly with sequence length, making generation progressively slower.
+*   **Memory**: KV Cache requires memory (Purple line), which grows linearly with batch size. This is the trade-off for speed.
+
+### Per-Token Latency Trace
+
+To visualize the "why", here is the latency for every single token generated in a sequence (Batch Size 1), averaged over 5 runs:
+
+![Token Latency](token_latency.png)
+
+*   **No Cache (Red)**: Latency increases with every new token (linear growth). The model has to re-process the entire history every time.
+*   **KV Cache (Blue)**: After the first token (prefill), latency is flat and constant. The model only processes the one new token.
+
+## 🧠 Visualization
+
+To understand *how* the KV cache works, we built an animated dashboard (`visualize_kv.py`).
+
+![KV Dashboard](kv_dashboard_l5_h0.gif)
+
+*   **Query (Top)**: The vector for the *current* token being generated.
+*   **Key Cache (Left)**: The stored keys for all previous tokens. The heatmap shows the activation patterns.
+*   **Attention (Right)**: The computed attention scores. Note how the model "attends" to specific past tokens.
+*   **Value Cache (Center)**: The stored values that will be weighted by the attention scores to form the output.
+
+## 🛠️ Implementation Details
+
+The core changes were made in `model.py`:
+
+1.  **`CausalSelfAttention.forward`**: Modified to accept `past_kv` (the cache) and return `new_kv` (the updated cache).
+2.  **`GPT.generate`**: Updated the generation loop to:
+    *   Pass the full prompt for the first step (prefill).
+    *   Pass only the *last generated token* for subsequent steps (decoding).
+    *   Maintain the `past_kv` state across steps.
+
+## 💻 Usage
+
+### 1. Installation
 ```bash
-# Install dependencies
-pip install torch numpy tiktoken matplotlib
+pip install torch numpy matplotlib tiktoken
+```
 
-# Benchmark (default prompt " vibe coding to learn kv cache.")
+### 2. Run Benchmark
+Run the comprehensive benchmark suite to generate the metrics and plots:
+```bash
 python benchmark_kv.py
+```
 
-# Visualize KV dynamics (layer 5, head 0)
+### 3. Run Visualization
+Generate the animated GIF dashboard:
+```bash
 python visualize_kv.py
 ```
-The benchmark produces `benchmark_results.png` (time vs cache size) and the visualizer creates `kv_dashboard_l5_h0.gif`.
 
-## Benchmark results
-![Benchmark plot](https://github.com/shahjui2000/nanoGPT-inference-optimization/blob/master/benchmark_results.png)
-The plot shows a **~2.8× speed‑up** on CPU when using the cache, while the cache grows linearly (~0.07 MB per token) up to the model’s `block_size` (1024 tokens).
+## 📂 Repository Structure
 
-## KV‑cache visualization
-![KV dashboard](https://github.com/shahjui2000/nanoGPT-inference-optimization/blob/master/kv_dashboard_l5_h0.gif)
-The GIF animates how each new token’s query interacts with the growing key/value cache and how attention is computed.
-
-## Insights & lessons learned
-- The cache must be reset when the sequence exceeds `block_size`; we now emit a warning and truncate the cache.
-- Warm‑up runs (3 iterations) stabilize CPU/GPU state, eliminating first‑run jitter.
-- Detailed per‑token timing (model forward, cache calculation, total) makes the constant‑time benefit of caching obvious.
-- Cache size reporting at intervals (tokens 9, 24, 49, 74, 99) demonstrates linear memory growth.
-- Prompt length matters: the first token processes the full prompt, subsequent tokens are constant‑time.
-
-## Repository structure
-- `model.py` – KV‑cache enabled model.
-- `benchmark_kv.py` – performance measurement and plotting.
-- `visualize_kv.py` – animated dashboard of KV dynamics.
-- `README.md` – this documentation.
-
-## Contribution
-Feel free to extend the cache to multi‑head or multi‑layer visualizations, integrate other inference optimizations (e.g., Flash‑Attention), or improve the benchmark visual style.
-
-## Naming suggestion
-The repository is now named **`nanoGPT‑inference‑optimization`** to highlight that KV caching is the primary inference improvement.
+*   `model.py`: The optimized GPT-2 model with KV Caching.
+*   `model_original.py`: The original, unoptimized implementation (for reference).
+*   `benchmark_kv.py`: Advanced benchmarking script (TTFT, TTPT, Throughput).
+*   `visualize_kv.py`: Visualization tool for KV cache dynamics.
+*   `train.py`: (Original) Training script.
 
 ---
-*Generated automatically to reflect the current state of the project.*
+*Forked from [karpathy/nanoGPT](https://github.com/karpathy/nanoGPT)*

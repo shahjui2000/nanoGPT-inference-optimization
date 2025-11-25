@@ -2,170 +2,259 @@ import torch
 import time
 import matplotlib.pyplot as plt
 import numpy as np
-from model import GPT
+from model import GPT, GPTConfig
+import tiktoken
 
-def benchmark_generation(model, start_tokens, max_new_tokens, use_cache=True):
+# Set research-style aesthetics
+plt.style.use('seaborn-v0_8-paper')
+plt.rcParams.update({
+    "font.family": "serif",
+    "font.serif": ["Times New Roman", "DejaVu Serif"],
+    "axes.grid": True,
+    "grid.alpha": 0.3,
+    "axes.titlesize": 12,
+    "axes.labelsize": 10,
+    "legend.fontsize": 9,
+    "xtick.labelsize": 9,
+    "ytick.labelsize": 9,
+    "figure.figsize": (10, 8),
+    "lines.linewidth": 2,
+    "lines.markersize": 6
+})
+
+def benchmark_batch(model, start_tokens, max_new_tokens, batch_size, device, use_cache=True):
+    """
+    Benchmark generation for a specific batch size.
+    Returns:
+        ttft: Time To First Token (seconds)
+        ttpt: Time Per Token (seconds, average of decoding steps)
+        throughput: Tokens per second
+        peak_memory: Peak KV cache memory usage (MB)
+    """
     model.eval()
-    device = start_tokens.device
     
-    # Warmup - run multiple times to stabilize compute
-    print(f"Warming up ({'with' if use_cache else 'without'} cache)...")
+    # Create batch
+    batch_tokens = start_tokens.repeat(batch_size, 1)
+    
+    # Warmup
+    # print(f"  Warmup (Batch Size {batch_size}, Cache={use_cache})...")
     with torch.no_grad():
-        for _ in range(4):  # Multiple warmup runs
-            model.generate(start_tokens, max_new_tokens=max_new_tokens, use_cache=use_cache)
+        model.generate(batch_tokens, max_new_tokens=5, use_cache=use_cache)
     
-    print(f"Benchmarking ({'with' if use_cache else 'without'} cache)...")
-    times = []
-    cache_sizes = []  # Track cache memory in MB
+    # Benchmark
+    print(f"  Benchmarking (Batch Size {batch_size}, Cache={use_cache})...")
     
-    idx = start_tokens.clone()
+    idx = batch_tokens.clone()
     past_kv = None
+    
+    # Metrics
+    t_start_prefill = 0
+    t_end_prefill = 0
+    decode_times = []
+    peak_memory_mb = 0
     
     with torch.no_grad():
         for i in range(max_new_tokens):
-            # Check if we're exceeding block size
-            if idx.size(1) > model.config.block_size:
-                print(f"WARNING: Exceeded block_size! Sequence length {idx.size(1)} > {model.config.block_size}")
-                print("         Resetting cache.")
-                # Reset cache and truncate sequence to block size
-                past_kv = None
-                idx = idx[:, -model.config.block_size:]
-            
             t0 = time.perf_counter()
             
-            if not use_cache:
-                idx_cond = idx if idx.size(1) <= model.config.block_size else idx[:, -model.config.block_size:]
-                logits, _ = model(idx_cond)
-                logits = logits[:, -1, :]
-                cache_size_mb = 0  # No cache
-            else:
-                if past_kv is None:
+            # Prefill (First Token) vs Decoding
+            if past_kv is None:
+                # Prefill phase
+                t_start_prefill = t0
+                if use_cache:
                     idx_cond = idx if idx.size(1) <= model.config.block_size else idx[:, -model.config.block_size:]
-                    t_model_start = time.perf_counter()
                     logits, _, past_kv, _, _ = model(idx_cond, use_cache=True)
-                    t_model_end = time.perf_counter()
-                    if i < 3:  # Print first few iterations
-                        print(f"  Token {i}: Model forward = {(t_model_end - t_model_start)*1000:.2f}ms (first token, seq_len={idx_cond.size(1)})")
                 else:
-                    idx_cond = idx[:, -1:]
-                    t_model_start = time.perf_counter()
-                    logits, _, past_kv, _, _ = model(idx_cond, past_kv=past_kv, use_cache=True)
-                    t_model_end = time.perf_counter()
-                    if i < 3:  # Print first few iterations
-                        print(f"  Token {i}: Model forward = {(t_model_end - t_model_start)*1000:.2f}ms (cached, seq_len={idx_cond.size(1)})")
-                logits = logits[:, -1, :]
+                    idx_cond = idx if idx.size(1) <= model.config.block_size else idx[:, -model.config.block_size:]
+                    logits, _ = model(idx_cond)
+                t_end_prefill = time.perf_counter()
                 
-                # Calculate cache size
-                t_cache_start = time.perf_counter()
+            else:
+                # Decoding phase
+                if use_cache:
+                    idx_cond = idx[:, -1:]
+                    logits, _, past_kv, _, _ = model(idx_cond, past_kv=past_kv, use_cache=True)
+                else:
+                    idx_cond = idx if idx.size(1) <= model.config.block_size else idx[:, -model.config.block_size:]
+                    logits, _ = model(idx_cond)
+            
+            # Update memory peak (only relevant for cache)
+            if use_cache and past_kv is not None:
                 cache_size_bytes = 0
-                if past_kv is not None:
-                    for layer_kv in past_kv:
-                        k, v = layer_kv
-                        cache_size_bytes += k.element_size() * k.nelement()
-                        cache_size_bytes += v.element_size() * v.nelement()
-                cache_size_mb = cache_size_bytes / (1024 * 1024)  # Convert to MB
-                t_cache_end = time.perf_counter()
-                if i < 3:
-                    print(f"           Cache calc = {(t_cache_end - t_cache_start)*1000:.2f}ms")
+                for layer_kv in past_kv:
+                    k, v = layer_kv
+                    cache_size_bytes += k.element_size() * k.nelement()
+                    cache_size_bytes += v.element_size() * v.nelement()
+                peak_memory_mb = max(peak_memory_mb, cache_size_bytes / (1024 * 1024))
 
-            # Greedy decoding for benchmark stability
+            # Greedy decoding
+            logits = logits[:, -1, :]
             idx_next = torch.argmax(logits, dim=-1, keepdim=True)
             idx = torch.cat((idx, idx_next), dim=1)
             
-            torch.cuda.synchronize() if device.type == 'cuda' else None
+            if device == 'cuda':
+                torch.cuda.synchronize()
+                
             t1 = time.perf_counter()
-            times.append(t1 - t0)
-            cache_sizes.append(cache_size_mb)
-            if use_cache and i < 3:
-                print(f"           Total = {(t1 - t0)*1000:.2f}ms\n")
-            # Report cache size at intervals
-            if use_cache and i in [9, 24, 49, 74, 99]:
-                print(f"  Token {i}: Cache size = {cache_size_mb:.2f} MB (seq_len = {idx.size(1)})")
             
-    return times, cache_sizes
+            if i > 0: # Skip first token for TTPT
+                decode_times.append(t1 - t0)
+
+    # Calculate Metrics
+    ttft = t_end_prefill - t_start_prefill
+    ttpt = np.mean(decode_times) if decode_times else 0.0
+    throughput = batch_size / ttpt if ttpt > 0 else 0.0
+    
+    return ttft, ttpt, throughput, peak_memory_mb
+
+def plot_token_latency(model, start_tokens, max_new_tokens, device, num_runs=5):
+    """
+    Generate a plot of per-token latency for a single sequence (Batch Size 1).
+    Compares Cache vs No Cache.
+    Averages over `num_runs` to smooth out noise.
+    """
+    print(f"\nGenerating Token Latency Plot (Batch Size 1, averaged over {num_runs} runs)...")
+    
+    def run_trace(use_cache):
+        # Warmup
+        idx_warmup = start_tokens.clone()
+        with torch.no_grad():
+            model.generate(idx_warmup, max_new_tokens=5, use_cache=use_cache)
+            
+        # Multiple runs
+        all_times = []
+        for _ in range(num_runs):
+            times = []
+            idx = start_tokens.clone()
+            past_kv = None
+            with torch.no_grad():
+                for i in range(max_new_tokens):
+                    t0 = time.perf_counter()
+                    if use_cache:
+                        if past_kv is None:
+                            idx_cond = idx
+                            logits, _, past_kv, _, _ = model(idx_cond, use_cache=True)
+                        else:
+                            idx_cond = idx[:, -1:]
+                            logits, _, past_kv, _, _ = model(idx_cond, past_kv=past_kv, use_cache=True)
+                    else:
+                        idx_cond = idx if idx.size(1) <= model.config.block_size else idx[:, -model.config.block_size:]
+                        logits, _ = model(idx_cond)
+                    
+                    logits = logits[:, -1, :]
+                    idx_next = torch.argmax(logits, dim=-1, keepdim=True)
+                    idx = torch.cat((idx, idx_next), dim=1)
+                    if device == 'cuda': torch.cuda.synchronize()
+                    t1 = time.perf_counter()
+                    times.append((t1 - t0) * 1000) # ms
+            all_times.append(times)
+        
+        # Average over runs
+        avg_times = np.mean(all_times, axis=0)
+        return avg_times
+
+    times_cache = run_trace(use_cache=True)
+    times_no_cache = run_trace(use_cache=False)
+    
+    plt.figure(figsize=(10, 6))
+    plt.plot(times_no_cache, label='No Cache', color='#E74C3C', linewidth=2, alpha=0.8)
+    plt.plot(times_cache, label='KV Cache', color='#3498DB', linewidth=2, alpha=0.8)
+    plt.xlabel('Token Index')
+    plt.ylabel('Latency (ms)')
+    plt.title(f'Per-Token Latency: Cache vs No Cache (Batch Size 1, Avg of {num_runs} runs)')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig('token_latency.png', dpi=300)
+    print("Saved token_latency.png")
 
 def main():
     torch.manual_seed(1337)
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {device}")
 
-    # Load a small GPT-2 model
+    # Load GPT-2
     print("Loading GPT-2 model...")
     try:
         model = GPT.from_pretrained('gpt2')
     except Exception as e:
         print(f"Failed to load gpt2: {e}")
-        print("Initializing a small random model instead.")
-        from model import GPTConfig
         config = GPTConfig(n_layer=6, n_head=6, n_embd=384)
         model = GPT(config)
-        
     model.to(device)
-    
-    # Prompt - use actual text to demonstrate cache benefits
-    import tiktoken
+
+    # Prompt
     enc = tiktoken.get_encoding("gpt2")
     prompt_text = " I am vibe coding to learn kv cache. To do that I am benchmarking kv cache."
     start_ids = enc.encode(prompt_text)
     start_tokens = torch.tensor([start_ids], dtype=torch.long, device=device)
     print(f"Prompt: '{prompt_text}' ({len(start_ids)} tokens)")
     
-    #
-    # 
-    max_new_tokens = 100
+    max_new_tokens = 50
+    batch_sizes = [1, 2, 4, 8, 16, 32]
     
-    # Benchmark
-    times_no_cache, cache_sizes_no_cache = benchmark_generation(model, start_tokens, max_new_tokens, use_cache=False)
-    times_cache, cache_sizes_cache = benchmark_generation(model, start_tokens, max_new_tokens, use_cache=True)
+    # 1. Run Detailed Token Latency Trace (BS=1)
+    plot_token_latency(model, start_tokens, max_new_tokens, device)
     
-    # Statistics
-    avg_no_cache = np.mean(times_no_cache)
-    avg_cache = np.mean(times_cache)
-    max_cache_size = max(cache_sizes_cache)
+    # 2. Run Batch Benchmark Suite
+    results_cache = {'bs': [], 'ttft': [], 'ttpt': [], 'throughput': [], 'memory': []}
+    results_no_cache = {'bs': [], 'ttft': [], 'ttpt': [], 'throughput': [], 'memory': []}
     
-    print(f"\nAverage time per token (no cache): {avg_no_cache*1000:.2f} ms")
-    print(f"Average time per token (with cache): {avg_cache*1000:.2f} ms")
-    print(f"Speedup: {avg_no_cache / avg_cache:.2f}x")
-    print(f"Max cache size: {max_cache_size:.2f} MB")
+    print("\nStarting Benchmark Suite...")
     
-    # Plotting - Dual axis plot
-    try:
-        # Convert times to milliseconds
-        times_no_cache_ms = [t * 1000 for t in times_no_cache]
-        times_cache_ms = [t * 1000 for t in times_cache]
+    for bs in batch_sizes:
+        # With Cache
+        ttft, ttpt, th, mem = benchmark_batch(model, start_tokens, max_new_tokens, bs, device, use_cache=True)
+        results_cache['bs'].append(bs)
+        results_cache['ttft'].append(ttft * 1000)
+        results_cache['ttpt'].append(ttpt * 1000)
+        results_cache['throughput'].append(th)
+        results_cache['memory'].append(mem)
         
-        fig, ax1 = plt.subplots(figsize=(12, 7))
-        
-        # Plot time on left y-axis (in milliseconds)
-        color_no_cache = '#E74C3C'  # Red
-        color_cache = '#3498DB'      # Blue
-        ax1.set_xlabel('Token Index', fontsize=12)
-        ax1.set_ylabel('Time per Token (ms)', fontsize=12, color='black')
-        line1 = ax1.plot(times_no_cache_ms, label='Time (No Cache)', color=color_no_cache, linewidth=2, alpha=0.8)
-        line2 = ax1.plot(times_cache_ms, label='Time (With Cache)', color=color_cache, linewidth=2, alpha=0.8)
-        ax1.tick_params(axis='y', labelcolor='black')
-        ax1.grid(True, alpha=0.3)
-        
-        # Plot cache size on right y-axis
-        ax2 = ax1.twinx()
-        color_cache_size = '#2ECC71'  # Green
-        ax2.set_ylabel('Cache Size (MB)', fontsize=12, color=color_cache_size)
-        line3 = ax2.plot(cache_sizes_cache, label='Cache Size', color=color_cache_size, linewidth=2, linestyle='--', alpha=0.8)
-        ax2.tick_params(axis='y', labelcolor=color_cache_size)
-        ax2.fill_between(range(len(cache_sizes_cache)), cache_sizes_cache, alpha=0.1, color=color_cache_size)
-        
-        # Combine legends
-        lines = line1 + line2 + line3
-        labels = [l.get_label() for l in lines]
-        ax1.legend(lines, labels, loc='upper left', fontsize=10)
-        
-        plt.title(f'KV Cache: Time vs Memory Trade-off\n(Speedup: {avg_no_cache/avg_cache:.2f}x, Max Cache: {max_cache_size:.2f} MB)', 
-                 fontsize=14, fontweight='bold')
-        plt.tight_layout()
-        plt.savefig('benchmark_results.png', dpi=150)
-        print("\nPlot saved to benchmark_results.png")
-    except Exception as e:
-        print(f"Could not generate plot: {e}")
+        # Without Cache
+        ttft, ttpt, th, mem = benchmark_batch(model, start_tokens, max_new_tokens, bs, device, use_cache=False)
+        results_no_cache['bs'].append(bs)
+        results_no_cache['ttft'].append(ttft * 1000)
+        results_no_cache['ttpt'].append(ttpt * 1000)
+        results_no_cache['throughput'].append(th)
+        results_no_cache['memory'].append(mem)
+
+    # Plotting Grid
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    fig.suptitle('KV Cache Performance Analysis (GPT-2)', fontsize=16, fontweight='bold', y=0.95)
+    
+    # Helper for plots
+    def plot_metric(ax, metric_key, title, ylabel):
+        ax.plot(results_no_cache['bs'], results_no_cache[metric_key], 'o--', label='No Cache', color='#E74C3C', alpha=0.7)
+        ax.plot(results_cache['bs'], results_cache[metric_key], 'o-', label='KV Cache', color='#3498DB', linewidth=2)
+        ax.set_title(title)
+        ax.set_xlabel('Batch Size (log scale)')
+        ax.set_ylabel(ylabel)
+        ax.set_xscale('log', base=2)
+        ax.set_xticks(batch_sizes)
+        ax.set_xticklabels(batch_sizes)
+        ax.legend()
+
+    plot_metric(axes[0, 0], 'ttft', 'Time To First Token (TTFT)', 'Latency (ms)')
+    plot_metric(axes[0, 1], 'ttpt', 'Time Per Token (TTPT)', 'Latency (ms)')
+    plot_metric(axes[1, 0], 'throughput', 'Generation Throughput', 'Tokens / Second')
+    
+    # Memory (Only Cache makes sense to plot as "KV Cache Memory", but we can show 0 for no cache or just plot cache)
+    # The user asked for performance comparison, memory is specific to the cache feature.
+    # Let's keep memory just for Cache to show the cost.
+    ax = axes[1, 1]
+    ax.plot(results_cache['bs'], results_cache['memory'], 'd-', color='#9B59B6', label='KV Cache Memory')
+    ax.set_title('Peak KV Cache Memory')
+    ax.set_xlabel('Batch Size (log scale)')
+    ax.set_ylabel('Memory (MB)')
+    ax.set_xscale('log', base=2)
+    ax.set_xticks(batch_sizes)
+    ax.set_xticklabels(batch_sizes)
+    ax.legend()
+    
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.savefig('benchmark_results.png', dpi=300, bbox_inches='tight')
+    print("\nBenchmark complete. Results saved to benchmark_results.png")
 
 if __name__ == '__main__':
     main()
