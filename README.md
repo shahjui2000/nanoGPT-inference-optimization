@@ -60,7 +60,7 @@ The core changes were made in `model.py`:
     *   Pass only the *last generated token* for subsequent steps (decoding).
     *   Maintain the `past_kv` state across steps.
 
-## 💡 Technical Insights & Learnings
+## 💡 Technical Insights and Learnings
 
 1.  **The "Prefill" Cost is Unavoidable**: Even with KV Cache, the first token (Time-To-First-Token) is always slow because the model must process the entire prompt in parallel. The cache only speeds up the *subsequent* tokens (decoding).
 2.  **Prompt Length Matters**: To truly see the performance gap, the sequence length must be sufficient. With **No Cache**, latency grows linearly with every new token (O(N)). With **KV Cache**, latency remains flat (O(1)) regardless of how long the prompt or generated text becomes.
